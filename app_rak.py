@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import io
+import datetime
 
 st.set_page_config(layout="wide", page_title="Tracker Gudang Pro")
 st.title("📦 Sistem Tracker Rak Gudang")
@@ -20,13 +21,16 @@ def load_rack_layout(file_name, sheet_name):
     df = pd.read_excel(file_name, sheet_name=sheet_name, header=None)
     return df.replace(np.nan, '', regex=True)
 
-def generate_pdf_layout(df_layout, sbin_db, sheet_name):
-    fig, ax = plt.subplots(figsize=(df_layout.shape[1] * 0.6, df_layout.shape[0] * 0.4))
+# Fungsi membuat PDF yang sudah ditambahkan Ringkasan
+def generate_pdf_layout(df_layout, sbin_db, sheet_name, tot_terisi, tot_kosong, tot_material, tgl_str):
+    # Tambah tinggi gambar sedikit (ditambah 2.5) untuk area teks ringkasan di atas
+    fig, ax = plt.subplots(figsize=(df_layout.shape[1] * 0.6, (df_layout.shape[0] * 0.4) + 2.5))
     ax.set_xlim(0, df_layout.shape[1])
     ax.set_ylim(0, df_layout.shape[0])
     ax.invert_yaxis()
     ax.axis('off')
 
+    # Menggambar kotak-kotak SBin
     for r in range(df_layout.shape[0]):
         for c in range(df_layout.shape[1]):
             val = str(df_layout.iat[r, c]).strip()
@@ -41,7 +45,21 @@ def generate_pdf_layout(df_layout, sbin_db, sheet_name):
                 ax.add_patch(rect)
                 ax.text(c + 0.45, r + 0.45, val, ha='center', va='center', fontsize=7, fontweight='bold', color='gray')
                 
-    plt.title(f"Layout Visual SBin - {sheet_name}", fontsize=14, pad=20)
+    # Menuliskan Teks Ringkasan di atas layout
+    teks_ringkasan = (
+        f"Data Tanggal: {tgl_str}\n"
+        f"----------------------------------\n"
+        f"• SBin Terisi : {tot_terisi} SBin\n"
+        f"• SBin Kosong : {tot_kosong} SBin\n"
+        f"• Material di Jalan : {tot_material} Item"
+    )
+    # Posisikan teks ringkasan (x=0.5 tengah, y=0.95 atas)
+    fig.text(0.5, 0.95, teks_ringkasan, ha='center', va='top', fontsize=12, 
+             bbox=dict(boxstyle="round,pad=0.5", facecolor="#f8f9fa", edgecolor="#ced4da"))
+
+    # Menambahkan judul PDF (diturunkan sedikit agar tidak tabrakan dengan ringkasan)
+    plt.title(f"Layout Visual SBin - {sheet_name}", fontsize=14, pad=100, fontweight='bold')
+    
     buf = io.BytesIO()
     plt.savefig(buf, format="pdf", bbox_inches='tight')
     buf.seek(0)
@@ -67,12 +85,8 @@ if daftar_sheet:
             for col in range(df_layout.shape[1]):
                 val = str(df_layout.iat[row, col]).strip()
                 if val != "" and val.upper() not in ["KANTOR", "JALAN", "PINTU", "TYPE", "RAK"]:
-                    # Sederhana: True jika terisi, False jika kosong
                     st.session_state.sbin_db[sheet_aktif][val] = False
 
-    # ==========================================
-    # PILIHAN MODE AKTIVITAS
-    # ==========================================
     mode_utama = st.radio(
         "Pilih Aktivitas yang Ingin Dilakukan:", 
         ["📝 Ceklist Keterisian SBin", "🚚 Input Total Material di Jalan"],
@@ -132,30 +146,49 @@ if daftar_sheet:
             st.rerun()
 
     # ==========================================
-    # REKAP & PDF DOWNLOAD
+    # REKAP & PDF DOWNLOAD (Anti Lag & Dinamis)
     # ==========================================
     st.markdown("---")
     col_rekap, col_pdf = st.columns([3, 1])
     
+    # Hitung Variabel Rekap
+    total_sbin = len(st.session_state.sbin_db[sheet_aktif])
+    tot_terisi = sum(1 for status in st.session_state.sbin_db[sheet_aktif].values() if status)
+    tot_kosong = total_sbin - tot_terisi
+    tot_material = st.session_state.material_jalan[sheet_aktif]
+
     with col_rekap:
         st.subheader("📊 Dasbor Rekapitulasi")
-        total_sbin = len(st.session_state.sbin_db[sheet_aktif])
-        tot_terisi = sum(1 for status in st.session_state.sbin_db[sheet_aktif].values() if status)
-        
         c1, c2, c3 = st.columns(3)
         c1.metric("Total Kapasitas (SBin)", total_sbin)
         c2.metric("✅ SBin Terisi", tot_terisi)
-        c3.metric("🚚 Material di Jalan", st.session_state.material_jalan[sheet_aktif])
+        c3.metric("🚚 Material di Jalan", tot_material)
 
     with col_pdf:
         st.subheader("🖨️ Cetak Layout")
-        pdf_file = generate_pdf_layout(df_layout, st.session_state.sbin_db[sheet_aktif], sheet_aktif)
-        st.download_button(
-            label="📄 Download Layout PDF",
-            data=pdf_file,
-            file_name=f"Layout_{sheet_aktif}.pdf",
-            mime="application/pdf",
-            type="primary"
-        )
+        st.write("Klik tombol di bawah untuk memproses PDF.")
+        
+        # Penamaan File Dinamis dengan Tanggal Bahasa Indonesia
+        sekarang = datetime.datetime.now()
+        bulan_indo = ["", "Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"]
+        tgl_str = f"{sekarang.day} {bulan_indo[sekarang.month]} {sekarang.year}"
+        
+        nama_file_dinamis = f"sbin {sheet_aktif} data {tgl_str}.pdf"
+        
+        # Tombol Pemicu PDF
+        if st.button("🔄 Proses Layout PDF"):
+            with st.spinner("Menyiapkan ringkasan & menggambar layout..."):
+                pdf_file = generate_pdf_layout(df_layout, st.session_state.sbin_db[sheet_aktif], sheet_aktif, tot_terisi, tot_kosong, tot_material, tgl_str)
+                st.session_state['file_pdf_siap'] = pdf_file
+                
+        # Menampilkan Tombol Download
+        if 'file_pdf_siap' in st.session_state:
+            st.download_button(
+                label="📄 Download Layout PDF",
+                data=st.session_state['file_pdf_siap'],
+                file_name=nama_file_dinamis,
+                mime="application/pdf",
+                type="primary"
+            )
 else:
     st.error("Gagal memuat Excel.")
