@@ -21,21 +21,22 @@ def load_rack_layout(file_name, sheet_name):
     df = pd.read_excel(file_name, sheet_name=sheet_name, header=None)
     return df.replace(np.nan, '', regex=True)
 
-# Fungsi membuat PDF yang sudah ditambahkan Ringkasan
+# Fungsi membuat PDF (Logika dibalik: hijau untuk terisi, putih untuk kosong)
 def generate_pdf_layout(df_layout, sbin_db, sheet_name, tot_terisi, tot_kosong, tot_material, tgl_str):
-    # Tambah tinggi gambar sedikit (ditambah 2.5) untuk area teks ringkasan di atas
     fig, ax = plt.subplots(figsize=(df_layout.shape[1] * 0.6, (df_layout.shape[0] * 0.4) + 2.5))
     ax.set_xlim(0, df_layout.shape[1])
     ax.set_ylim(0, df_layout.shape[0])
     ax.invert_yaxis()
     ax.axis('off')
 
-    # Menggambar kotak-kotak SBin
     for r in range(df_layout.shape[0]):
         for c in range(df_layout.shape[1]):
             val = str(df_layout.iat[r, c]).strip()
             if val != "" and val.upper() not in ["KANTOR", "JALAN", "PINTU", "TYPE", "RAK"]:
-                is_terisi = sbin_db.get(val, False)
+                # Logika Baru: is_kosong adalah True jika dicentang, False jika tidak.
+                is_kosong = sbin_db.get(val, False)
+                is_terisi = not is_kosong
+                
                 warna_bg = '#90EE90' if is_terisi else '#FFFFFF'
                 rect = Rectangle((c, r), 0.9, 0.9, facecolor=warna_bg, edgecolor='black', linewidth=1)
                 ax.add_patch(rect)
@@ -45,7 +46,6 @@ def generate_pdf_layout(df_layout, sbin_db, sheet_name, tot_terisi, tot_kosong, 
                 ax.add_patch(rect)
                 ax.text(c + 0.45, r + 0.45, val, ha='center', va='center', fontsize=7, fontweight='bold', color='gray')
                 
-    # Menuliskan Teks Ringkasan di atas layout
     teks_ringkasan = (
         f"Data Tanggal: {tgl_str}\n"
         f"----------------------------------\n"
@@ -53,11 +53,9 @@ def generate_pdf_layout(df_layout, sbin_db, sheet_name, tot_terisi, tot_kosong, 
         f"• SBin Kosong : {tot_kosong} SBin\n"
         f"• Material di Jalan : {tot_material} Item"
     )
-    # Posisikan teks ringkasan (x=0.5 tengah, y=0.95 atas)
     fig.text(0.5, 0.95, teks_ringkasan, ha='center', va='top', fontsize=12, 
              bbox=dict(boxstyle="round,pad=0.5", facecolor="#f8f9fa", edgecolor="#ced4da"))
 
-    # Menambahkan judul PDF (diturunkan sedikit agar tidak tabrakan dengan ringkasan)
     plt.title(f"Layout Visual SBin - {sheet_name}", fontsize=14, pad=100, fontweight='bold')
     
     buf = io.BytesIO()
@@ -85,16 +83,17 @@ if daftar_sheet:
             for col in range(df_layout.shape[1]):
                 val = str(df_layout.iat[row, col]).strip()
                 if val != "" and val.upper() not in ["KANTOR", "JALAN", "PINTU", "TYPE", "RAK"]:
+                    # Default: False (Tidak dicentang = otomatis dihitung TERISI)
                     st.session_state.sbin_db[sheet_aktif][val] = False
 
     mode_utama = st.radio(
         "Pilih Aktivitas yang Ingin Dilakukan:", 
-        ["📝 Ceklist Keterisian SBin", "🚚 Input Total Material di Jalan"],
+        ["📝 Ceklist Kekosongan SBin", "🚚 Input Total Material di Jalan"],
         horizontal=True
     )
     st.markdown("---")
 
-    if mode_utama == "📝 Ceklist Keterisian SBin":
+    if mode_utama == "📝 Ceklist Kekosongan SBin":
         daftar_semua_sbin = list(st.session_state.sbin_db[sheet_aktif].keys())
         daftar_rak = sorted(list(set([k[:2] for k in daftar_semua_sbin if len(k) >= 2])))
         
@@ -102,24 +101,26 @@ if daftar_sheet:
         with col_f1:
             rak_aktif = st.selectbox("Filter Lorong/Rak:", ["SEMUA RAK"] + daftar_rak)
         with col_f2:
-            filter_status = st.radio("Fokus Tampilan:", ["Semua", "Hanya Kosong", "Hanya Terisi"], horizontal=True)
+            # Pilihan filter ikut dibalik
+            filter_status = st.radio("Fokus Tampilan:", ["Semua", "Hanya Kosong (Dicentang)", "Hanya Terisi (Tidak Dicentang)"], horizontal=True)
 
         data_list = []
-        for sbin_code, terisi in st.session_state.sbin_db[sheet_aktif].items():
+        for sbin_code, is_kosong in st.session_state.sbin_db[sheet_aktif].items():
             if rak_aktif != "SEMUA RAK" and not sbin_code.startswith(rak_aktif):
                 continue
-            if filter_status == "Hanya Kosong" and terisi:
+            if filter_status == "Hanya Kosong (Dicentang)" and not is_kosong:
                 continue
-            if filter_status == "Hanya Terisi" and not terisi:
+            if filter_status == "Hanya Terisi (Tidak Dicentang)" and is_kosong:
                 continue
             
-            data_list.append({"Kode SBin": sbin_code, "Terisi (1 Pallet)": terisi})
+            # Kita ubah labelnya biar tidak bingung
+            data_list.append({"Kode SBin": sbin_code, "Centang Jika Kosong": is_kosong})
 
         if data_list:
             df_tabel = pd.DataFrame(data_list)
             tabel_diedit = st.data_editor(
                 df_tabel,
-                column_config={"Terisi (1 Pallet)": st.column_config.CheckboxColumn("SBin Terisi?", default=False)},
+                column_config={"Centang Jika Kosong": st.column_config.CheckboxColumn("SBin Kosong?", default=False)},
                 disabled=["Kode SBin"],
                 hide_index=True,
                 use_container_width=True
@@ -127,7 +128,7 @@ if daftar_sheet:
             
             if st.button("💾 Simpan Ceklist SBin", type="primary"):
                 for index, row in tabel_diedit.iterrows():
-                    st.session_state.sbin_db[sheet_aktif][row["Kode SBin"]] = row["Terisi (1 Pallet)"]
+                    st.session_state.sbin_db[sheet_aktif][row["Kode SBin"]] = row["Centang Jika Kosong"]
                 st.success("Data rak berhasil diperbarui!")
                 st.rerun()
         else:
@@ -146,15 +147,15 @@ if daftar_sheet:
             st.rerun()
 
     # ==========================================
-    # REKAP & PDF DOWNLOAD (Anti Lag & Dinamis)
+    # REKAP & PDF DOWNLOAD
     # ==========================================
     st.markdown("---")
     col_rekap, col_pdf = st.columns([3, 1])
     
-    # Hitung Variabel Rekap
+    # Perhitungan dibalik
     total_sbin = len(st.session_state.sbin_db[sheet_aktif])
-    tot_terisi = sum(1 for status in st.session_state.sbin_db[sheet_aktif].values() if status)
-    tot_kosong = total_sbin - tot_terisi
+    tot_kosong = sum(1 for is_kosong in st.session_state.sbin_db[sheet_aktif].values() if is_kosong)
+    tot_terisi = total_sbin - tot_kosong
     tot_material = st.session_state.material_jalan[sheet_aktif]
 
     with col_rekap:
@@ -162,26 +163,23 @@ if daftar_sheet:
         c1, c2, c3 = st.columns(3)
         c1.metric("Total Kapasitas (SBin)", total_sbin)
         c2.metric("✅ SBin Terisi", tot_terisi)
-        c3.metric("🚚 Material di Jalan", tot_material)
+        c3.metric("⬜ SBin Kosong", tot_kosong)
 
     with col_pdf:
         st.subheader("🖨️ Cetak Layout")
         st.write("Klik tombol di bawah untuk memproses PDF.")
         
-        # Penamaan File Dinamis dengan Tanggal Bahasa Indonesia
         sekarang = datetime.datetime.now()
         bulan_indo = ["", "Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"]
         tgl_str = f"{sekarang.day} {bulan_indo[sekarang.month]} {sekarang.year}"
         
         nama_file_dinamis = f"sbin {sheet_aktif} data {tgl_str}.pdf"
         
-        # Tombol Pemicu PDF
         if st.button("🔄 Proses Layout PDF"):
             with st.spinner("Menyiapkan ringkasan & menggambar layout..."):
                 pdf_file = generate_pdf_layout(df_layout, st.session_state.sbin_db[sheet_aktif], sheet_aktif, tot_terisi, tot_kosong, tot_material, tgl_str)
                 st.session_state['file_pdf_siap'] = pdf_file
                 
-        # Menampilkan Tombol Download
         if 'file_pdf_siap' in st.session_state:
             st.download_button(
                 label="📄 Download Layout PDF",
